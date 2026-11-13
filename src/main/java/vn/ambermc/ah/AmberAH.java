@@ -43,7 +43,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -186,17 +185,17 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
 
     private void checkExpirations() {
         long now = System.currentTimeMillis();
-        boolean changed = false;
-        Iterator> it = activeListings.entrySet().iterator();
-        while (it.hasNext()) {
-            AuctionListing listing = it.next().getValue();
+        List<String> expiredIds = new ArrayList<>();
+        for (AuctionListing listing : activeListings.values()) {
             if (now >= listing.expiresAt) {
-                it.remove();
+                expiredIds.add(listing.id);
                 expiredItems.computeIfAbsent(listing.sellerUuid, k -> new ArrayList<>()).add(listing.item);
-                changed = true;
             }
         }
-        if (changed) {
+        if (!expiredIds.isEmpty()) {
+            for (String id : expiredIds) {
+                activeListings.remove(id);
+            }
             saveData();
         }
     }
