@@ -38,6 +38,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
@@ -70,8 +72,15 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
 
     @Override
     public void onEnable() {
-        saveDefaultConfig();
+        if (getResource("config.yml") != null) {
+            saveDefaultConfig();
+        } else {
+            writeDefaultConfigIfMissing();
+        }
+        reloadConfig();
+
         loadData();
+        setupEconomy();
         Bukkit.getPluginManager().registerEvents(this, this);
 
         var cmd = getCommand("ah");
@@ -80,21 +89,57 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
             cmd.setTabCompleter(this);
         }
 
-        if (!setupEconomy()) {
-            Bukkit.getScheduler().runTask(this, () -> {
-                if (!setupEconomy()) {
-                    getLogger().severe("Không tìm thấy Vault hoặc plugin tiền tệ! Đang tắt AmberAH.");
-                    Bukkit.getPluginManager().disablePlugin(this);
-                }
-            });
-        }
-
         Bukkit.getScheduler().runTaskTimer(this, this::checkExpirations, 200L, 600L);
     }
 
     @Override
     public void onDisable() {
         saveData();
+    }
+
+    private void writeDefaultConfigIfMissing() {
+        File cfgFile = new File(getDataFolder(), "config.yml");
+        if (cfgFile.exists()) return;
+        try {
+            getDataFolder().mkdirs();
+            String defaultYaml = """
+                    max-listings: 10
+                    listing-duration-hours: 72
+                    min-price: 1.0
+                    max-price: 1000000000000000.0
+                    titles:
+                      main: "&8CHỢ ĐẤU GIÁ (Trang %page%)"
+                      confirm: "&8XÁC NHẬN MUA HÀNG"
+                      your-items: "&8VẬT PHẨM CỦA BẠN"
+                      shulker: "&8XEM TRƯỚC SHULKER BOX"
+                    messages:
+                      prefix: "&#00d2ff&lAmberAH &8» &r"
+                      no-permission: "&cBạn không có quyền thực hiện lệnh này."
+                      player-only: "&cLệnh này chỉ dùng được trong game."
+                      hold-item: "&cBạn phải cầm vật phẩm trên tay chính để treo bán!"
+                      invalid-price: "&cGiá tiền không hợp lệ! Ví dụ: 500, 10k, 1.5m, 1b, 1t"
+                      price-range: "&cGiá bán phải nằm trong khoảng từ &f$%min% &cđến &f$%max%&c."
+                      invalid-amount: "&cSố lượng không hợp lệ (tối đa %max% vật phẩm trên tay)."
+                      max-listings-reached: "&cBạn đã đạt giới hạn treo bán tối đa (&f%max% &cvật phẩm)!"
+                      listed: "&aĐã treo bán &f%amount%x %item% &avới giá &e$%price%&a!"
+                      bought: "&aBạn đã mua &f%amount%x %item% &acủa &f%seller% &avới giá &e$%price%&a!"
+                      sold-notify: "&aNgười chơi &f%buyer% &ađã mua &f%amount%x %item% &acủa bạn (+&e$%price%&a)!"
+                      not-enough-money: "&cBạn không đủ tiền để mua vật phẩm này (cần &e$%price%&c)."
+                      cannot-buy-own: "&cBạn không thể tự mua vật phẩm của chính mình."
+                      already-sold: "&cVật phẩm này vừa được người khác mua hoặc đã bị gỡ xuống."
+                      cancelled: "&eĐã gỡ vật phẩm khỏi chợ và trả lại vào túi đồ."
+                      claimed: "&aĐã nhận lại vật phẩm hết hạn vào túi đồ."
+                      claimed-all: "&aĐã nhận lại toàn bộ &f%count% &avật phẩm vào túi đồ!"
+                      no-expired: "&cBạn không có vật phẩm hết hạn nào để nhận."
+                      search-prompt: "&eNhập tên vật phẩm muốn tìm vào khung chat (gõ &chuy &eđể hủy):"
+                      search-cancelled: "&cĐã hủy tìm kiếm."
+                      reloaded: "&aĐã tải lại cấu hình AmberAH!"
+                      usage: "&cSử dụng: /ah [sell <giá> [số_lượng] | search <tên> | expired | reload]"
+                    """;
+            Files.writeString(cfgFile.toPath(), defaultYaml, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     @EventHandler
