@@ -1,0 +1,41 @@
+# Số lượng vật phẩm tối đa mỗi người chơi được treo bán cùng lúc
+max-listings: 5
+
+# Thời hạn treo bán trên chợ (tính bằng giờ: 72 = 3 ngày)
+listing-duration-hours: 72
+
+# Giá bán tối thiểu và tối đa (1000000000000000.0 = 1000T)
+min-price: 1.0
+max-price: 1000000000000000.0
+
+# Tiêu đề các giao diện
+titles:
+  main: "&8CHỢ ĐẤU GIÁ (Trang %page%)"
+  confirm: "&8XÁC NHẬN MUA HÀNG"
+  your-items: "&8VẬT PHẨM CỦA BẠN"
+  shulker: "&8XEM TRƯỚC SHULKER BOX"
+
+# Thông báo hệ thống
+messages:
+  prefix: "&#00d2ff&lAmberAH &8» &r"
+  no-permission: "&cBạn không có quyền thực hiện lệnh này."
+  player-only: "&cLệnh này chỉ dùng được trong game."
+  hold-item: "&cBạn phải cầm vật phẩm trên tay chính để treo bán!"
+  invalid-price: "&cGiá tiền không hợp lệ! Ví dụ: 500, 10k, 1.5m, 1b, 1t"
+  price-range: "&cGiá bán phải nằm trong khoảng từ &f$%min% &cđến &f$%max%&c."
+  invalid-amount: "&cSố lượng không hợp lệ (tối đa %max% vật phẩm trên tay)."
+  max-listings-reached: "&cBạn đã đạt giới hạn treo bán tối đa (&f%max% &cvật phẩm)!"
+  listed: "&aĐã treo bán &f%amount%x %item% &avới giá &e$%price%&a!"
+  bought: "&aBạn đã mua &f%amount%x %item% &acủa &f%seller% &avới giá &e$%price%&a!"
+  sold-notify: "&aNgười chơi &f%buyer% &ađã mua &f%amount%x %item% &acủa bạn (+&e$%price%&a)!"
+  not-enough-money: "&cBạn không đủ tiền để mua vật phẩm này (cần &e$%price%&c)."
+  cannot-buy-own: "&cBạn không thể tự mua vật phẩm của chính mình."
+  already-sold: "&cVật phẩm này vừa được người khác mua hoặc đã bị gỡ xuống."
+  cancelled: "&eĐã gỡ vật phẩm khỏi chợ và trả lại vào túi đồ."
+  claimed: "&aĐã nhận lại vật phẩm hết hạn vào túi đồ."
+  claimed-all: "&aĐã nhận lại toàn bộ &f%count% &avật phẩm vào túi đồ!"
+  no-expired: "&cBạn không có vật phẩm hết hạn nào để nhận."
+  search-prompt: "&eNhập tên vật phẩm muốn tìm vào khung chat (gõ &chuy &eđể hủy):"
+  search-cancelled: "&cĐã hủy tìm kiếm."
+  reloaded: "&aĐã tải lại cấu hình AmberAH!"
+  usage: "&cSử dụng: /ah [sell <giá> [số_lượng] | search <tên> | expired | reload]"
