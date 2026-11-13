@@ -3,6 +3,7 @@ version: 1.21.11
 main: vn.ambermc.ah.AmberAH
 api-version: '1.21'
 depend: [Vault]
+softdepend: [Essentials, CMI]
 commands:
   ah:
     description: Mở Chợ Đấu Giá AmberAH
