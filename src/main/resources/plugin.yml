@@ -1,0 +1,16 @@
+name: AmberAH
+version: 1.21.11
+main: vn.ambermc.ah.AmberAH
+api-version: '1.21'
+depend: [Vault]
+commands:
+  ah:
+    description: Mở Chợ Đấu Giá AmberAH
+    aliases: [auction, auctionhouse, cho]
+permissions:
+  amberah.use:
+    description: Quyền sử dụng Chợ Đấu Giá
+    default: true
+  amberah.admin:
+    description: Quyền quản trị AmberAH
+    default: op
