@@ -1,17 +1,22 @@
 package vn.ambermc.ah;
 
-import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.Sound;
 import org.bukkit.Tag;
+import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.block.ShulkerBox;
+import org.bukkit.block.Sign;
+import org.bukkit.block.sign.Side;
+import org.bukkit.block.sign.SignSide;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -22,6 +27,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.SignChangeEvent;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
@@ -42,14 +48,19 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 public final class AmberAH extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
@@ -60,8 +71,10 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
 
     private final Map<String, AuctionListing> activeListings = new LinkedHashMap<>();
     private final Map<UUID, List<ItemStack>> expiredItems = new HashMap<>();
+    private final List<TransactionRecord> transactionHistory = new ArrayList<>();
     private final Map<UUID, ViewerState> viewerStates = new HashMap<>();
-    private final Map<UUID, ViewerState> pendingSearch = new HashMap<>();
+    private final Map<UUID, Location> activeSignSessions = new HashMap<>();
+    private final Set<UUID> transitioningGui = new HashSet<>();
 
     private final LegacyComponentSerializer legacy = LegacyComponentSerializer.builder()
             .character('&')
@@ -69,6 +82,8 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
             .useUnusualXRepeatedCharacterHexFormat()
             .build();
     private final DecimalFormat priceFormat = new DecimalFormat("#.##", DecimalFormatSymbols.getInstance(Locale.US));
+    private final DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")
+            .withZone(ZoneId.of("Asia/Ho_Chi_Minh"));
 
     @Override
     public void onEnable() {
@@ -94,6 +109,9 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
 
     @Override
     public void onDisable() {
+        for (UUID uuid : new ArrayList<>(activeSignSessions.keySet())) {
+            cleanupSignSession(uuid);
+        }
         saveData();
     }
 
@@ -111,6 +129,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                       main: "&8CHỢ ĐẤU GIÁ (Trang %page%)"
                       confirm: "&8XÁC NHẬN MUA HÀNG"
                       your-items: "&8VẬT PHẨM CỦA BẠN"
+                      history: "&8LỊCH SỬ GIAO DỊCH (Trang %page%)"
                       shulker: "&8XEM TRƯỚC SHULKER BOX"
                     messages:
                       prefix: "&#00d2ff&lAmberAH &8» &r"
@@ -131,10 +150,8 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                       claimed: "&aĐã nhận lại vật phẩm hết hạn vào túi đồ."
                       claimed-all: "&aĐã nhận lại toàn bộ &f%count% &avật phẩm vào túi đồ!"
                       no-expired: "&cBạn không có vật phẩm hết hạn nào để nhận."
-                      search-prompt: "&eNhập tên vật phẩm muốn tìm vào khung chat (gõ &chuy &eđể hủy):"
-                      search-cancelled: "&cĐã hủy tìm kiếm."
                       reloaded: "&aĐã tải lại cấu hình AmberAH!"
-                      usage: "&cSử dụng: /ah [sell <giá> [số_lượng] | search <tên> | expired | reload]"
+                      usage: "&cSử dụng: /ah [sell <giá> [số_lượng] | search <tên> | expired | history | reload]"
                     """;
             Files.writeString(cfgFile.toPath(), defaultYaml, StandardCharsets.UTF_8);
         } catch (IOException e) {
@@ -170,6 +187,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
         dataConfig = YamlConfiguration.loadConfiguration(dataFile);
         activeListings.clear();
         expiredItems.clear();
+        transactionHistory.clear();
 
         ConfigurationSection activeSec = dataConfig.getConfigurationSection("active");
         if (activeSec != null) {
@@ -208,6 +226,36 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                 }
             }
         }
+
+        ConfigurationSection histSec = dataConfig.getConfigurationSection("history");
+        if (histSec != null) {
+            for (String id : histSec.getKeys(false)) {
+                ConfigurationSection entry = histSec.getConfigurationSection(id);
+                if (entry == null) continue;
+                ItemStack item = entry.getItemStack("item");
+                String buyerStr = entry.getString("buyer-uuid");
+                String buyerName = entry.getString("buyer-name", "Unknown");
+                String sellerStr = entry.getString("seller-uuid");
+                String sellerName = entry.getString("seller-name", "Unknown");
+                double price = entry.getDouble("price");
+                long timestamp = entry.getLong("timestamp");
+
+                if (item != null && !item.getType().isAir() && buyerStr != null && sellerStr != null) {
+                    transactionHistory.add(new TransactionRecord(
+                            id,
+                            UUID.fromString(buyerStr),
+                            buyerName,
+                            UUID.fromString(sellerStr),
+                            sellerName,
+                            item,
+                            price,
+                            timestamp
+                    ));
+                }
+            }
+            transactionHistory.sort(Comparator.comparingLong((TransactionRecord r) -> r.timestamp).reversed());
+        }
+
         checkExpirations();
     }
 
@@ -216,6 +264,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
         if (dataConfig == null) dataConfig = new YamlConfiguration();
         dataConfig.set("active", null);
         dataConfig.set("expired", null);
+        dataConfig.set("history", null);
 
         for (AuctionListing listing : activeListings.values()) {
             String path = "active." + listing.id;
@@ -231,6 +280,17 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
             if (!entry.getValue().isEmpty()) {
                 dataConfig.set("expired." + entry.getKey(), entry.getValue());
             }
+        }
+
+        for (TransactionRecord rec : transactionHistory) {
+            String path = "history." + rec.id;
+            dataConfig.set(path + ".buyer-uuid", rec.buyerUuid.toString());
+            dataConfig.set(path + ".buyer-name", rec.buyerName);
+            dataConfig.set(path + ".seller-uuid", rec.sellerUuid.toString());
+            dataConfig.set(path + ".seller-name", rec.sellerName);
+            dataConfig.set(path + ".item", rec.item);
+            dataConfig.set(path + ".price", rec.price);
+            dataConfig.set(path + ".timestamp", rec.timestamp);
         }
 
         try {
@@ -261,7 +321,27 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
         return viewerStates.computeIfAbsent(uuid, k -> new ViewerState());
     }
 
+    private void resetState(UUID uuid) {
+        ViewerState state = getState(uuid);
+        state.page = 0;
+        state.historyPage = 0;
+        state.category = FilterCategory.ALL;
+        state.sort = SortMode.NEWEST;
+        state.searchQuery = "";
+    }
+
+    private void openHolderInventory(Player player, Inventory inv) {
+        UUID uuid = player.getUniqueId();
+        transitioningGui.add(uuid);
+        try {
+            player.openInventory(inv);
+        } finally {
+            transitioningGui.remove(uuid);
+        }
+    }
+
     private void openMainGui(Player player) {
+        cleanupSignSession(player.getUniqueId());
         checkExpirations();
         ViewerState state = getState(player.getUniqueId());
 
@@ -307,6 +387,16 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                     List.of("&7Quay lại trang " + state.page)));
         }
 
+        int personalHistoryCount = countHistoryByPlayer(player.getUniqueId());
+        inv.setItem(46, createButton(Material.BOOK, "&6Lịch sử giao dịch",
+                List.of(
+                        "&7Xem lại các vật phẩm đã mua",
+                        "&7và đã bán thành công của bạn.",
+                        "&7Tổng giao dịch: &f" + personalHistoryCount,
+                        "",
+                        "&eBấm để xem lịch sử!"
+                )));
+
         List<String> filterLore = new ArrayList<>();
         for (FilterCategory cat : FilterCategory.values()) {
             if (cat == state.category) {
@@ -336,7 +426,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
 
         List<String> searchLore = new ArrayList<>();
         if (query.isEmpty()) {
-            searchLore.add("&7Tìm kiếm vật phẩm theo tên.");
+            searchLore.add("&7Tìm kiếm vật phẩm qua bảng hiệu.");
             searchLore.add("");
             searchLore.add("&eChuột trái để nhập từ khóa!");
         } else {
@@ -362,7 +452,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                     List.of("&7Chuyển sang trang " + (state.page + 2))));
         }
 
-        player.openInventory(inv);
+        openHolderInventory(player, inv);
     }
 
     private void openConfirmGui(Player player, AuctionListing listing) {
@@ -388,7 +478,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
         inv.setItem(15, createButton(Material.RED_STAINED_GLASS_PANE, "&c&lHỦY BỎ",
                 List.of("&7Quay lại Chợ Đấu Giá.")));
 
-        player.openInventory(inv);
+        openHolderInventory(player, inv);
     }
 
     private void openYourItemsGui(Player player) {
@@ -447,7 +537,78 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                     List.of("&7Thu hồi toàn bộ &f" + expList.size() + " &7vật phẩm hết hạn.")));
         }
 
-        player.openInventory(inv);
+        openHolderInventory(player, inv);
+    }
+
+    private void openHistoryGui(Player player) {
+        UUID uuid = player.getUniqueId();
+        ViewerState state = getState(uuid);
+
+        List<TransactionRecord> personal = new ArrayList<>();
+        for (TransactionRecord rec : transactionHistory) {
+            if (rec.buyerUuid.equals(uuid) || rec.sellerUuid.equals(uuid)) {
+                personal.add(rec);
+            }
+        }
+
+        int totalPages = Math.max(1, (int) Math.ceil(personal.size() / 45.0));
+        if (state.historyPage >= totalPages) state.historyPage = totalPages - 1;
+        if (state.historyPage < 0) state.historyPage = 0;
+
+        String titleRaw = getConfig().getString("titles.history", "&8LỊCH SỬ GIAO DỊCH (Trang %page%)")
+                .replace("%page%", String.valueOf(state.historyPage + 1));
+        AmberAHHolder holder = new AmberAHHolder(GuiType.HISTORY);
+        Inventory inv = Bukkit.createInventory(holder, 54, color(titleRaw));
+        holder.setInventory(inv);
+
+        if (personal.isEmpty()) {
+            inv.setItem(22, createButton(Material.BARRIER, "&cChưa có lịch sử giao dịch",
+                    List.of("&7Bạn chưa mua hoặc bán vật phẩm nào trên chợ.")));
+        } else {
+            int start = state.historyPage * 45;
+            int end = Math.min(start + 45, personal.size());
+
+            for (int i = start; i < end; i++) {
+                int slot = i - start;
+                TransactionRecord rec = personal.get(i);
+                ItemStack display = rec.item.clone();
+                ItemMeta meta = display.getItemMeta();
+                if (meta != null) {
+                    List<Component> lore = meta.lore() != null ? new ArrayList<>(meta.lore()) : new ArrayList<>();
+                    lore.add(color("&8&m--------------------"));
+                    if (rec.buyerUuid.equals(uuid)) {
+                        lore.add(color("&7Giao dịch: &aĐã mua hàng"));
+                        lore.add(color("&7Mua của: &f" + rec.sellerName));
+                        lore.add(color("&7Người mua: &f" + rec.buyerName + " &7(Bạn)"));
+                        lore.add(color("&7Giá đã trả: &e$" + formatPrice(rec.price)));
+                    } else {
+                        lore.add(color("&7Giao dịch: &bĐã bán hàng"));
+                        lore.add(color("&7Người bán: &f" + rec.sellerName + " &7(Bạn)"));
+                        lore.add(color("&7Người mua: &f" + rec.buyerName));
+                        lore.add(color("&7Tiền thu về: &a+$" + formatPrice(rec.price)));
+                    }
+                    lore.add(color("&7Thời gian: &f" + timeFormatter.format(Instant.ofEpochMilli(rec.timestamp))));
+                    meta.lore(lore);
+                    display.setItemMeta(meta);
+                }
+                inv.setItem(slot, display);
+            }
+        }
+
+        if (state.historyPage > 0) {
+            inv.setItem(45, createButton(Material.ARROW, "&aTrang trước",
+                    List.of("&7Quay lại trang " + state.historyPage)));
+        }
+
+        inv.setItem(49, createButton(Material.ARROW, "&cQuay lại Chợ Đấu Giá",
+                List.of("&7Trở về danh sách đấu giá chính.")));
+
+        if (state.historyPage + 1 < totalPages) {
+            inv.setItem(53, createButton(Material.ARROW, "&aTrang sau",
+                    List.of("&7Chuyển sang trang " + (state.historyPage + 2))));
+        }
+
+        openHolderInventory(player, inv);
     }
 
     private void openShulkerPreview(Player player, ItemStack shulkerItem) {
@@ -460,7 +621,110 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
         holder.setInventory(inv);
         inv.setContents(shulkerBox.getInventory().getContents());
 
-        player.openInventory(inv);
+        openHolderInventory(player, inv);
+    }
+
+    private void openSignSearch(Player player) {
+        UUID uuid = player.getUniqueId();
+        cleanupSignSession(uuid);
+
+        Location signLoc = findAirLocationNear(player);
+        if (signLoc == null) {
+            player.sendMessage(color(getPrefix() + "&cKhông tìm thấy khoảng trống quanh bạn để mở bảng tìm kiếm!"));
+            return;
+        }
+
+        Block block = signLoc.getBlock();
+        block.setType(Material.OAK_SIGN, false);
+        if (!(block.getState() instanceof Sign sign)) {
+            block.setType(Material.AIR, false);
+            return;
+        }
+
+        sign.setWaxed(false);
+        SignSide front = sign.getSide(Side.FRONT);
+        front.setLine(0, "");
+        front.setLine(1, "^^^^^^^^^^^^^^^");
+        front.setLine(2, "Nhập tên vật phẩm");
+        front.setLine(3, "rồi bấm Xong");
+        sign.update(true, false);
+
+        activeSignSessions.put(uuid, signLoc);
+        transitioningGui.add(uuid);
+        try {
+            player.closeInventory();
+        } finally {
+            transitioningGui.remove(uuid);
+        }
+
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!player.isOnline()) {
+                cleanupSignSession(uuid);
+                return;
+            }
+            Location currentLoc = activeSignSessions.get(uuid);
+            if (currentLoc == null) return;
+            Block currentBlock = currentLoc.getBlock();
+            if (currentBlock.getState() instanceof Sign currentSign) {
+                player.openSign(currentSign, Side.FRONT);
+            } else {
+                cleanupSignSession(uuid);
+            }
+        }, 2L);
+    }
+
+    private Location findAirLocationNear(Player player) {
+        Location base = player.getLocation().getBlock().getLocation();
+        World world = base.getWorld();
+        if (world == null) return null;
+
+        int[] dyOffsets = {2, 3, 1, 0, -1};
+        for (int dy : dyOffsets) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    int y = base.getBlockY() + dy;
+                    if (y < world.getMinHeight() || y >= world.getMaxHeight()) continue;
+                    Block candidate = world.getBlockAt(base.getBlockX() + dx, y, base.getBlockZ() + dz);
+                    if (candidate.getType().isAir()) {
+                        return candidate.getLocation();
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private void cleanupSignSession(UUID uuid) {
+        Location loc = activeSignSessions.remove(uuid);
+        if (loc != null && loc.getBlock().getType() == Material.OAK_SIGN) {
+            loc.getBlock().setType(Material.AIR, false);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onSignChange(SignChangeEvent event) {
+        Player player = event.getPlayer();
+        UUID uuid = player.getUniqueId();
+        Location signLoc = activeSignSessions.remove(uuid);
+        if (signLoc == null) return;
+
+        event.setCancelled(true);
+        if (signLoc.getBlock().getType() == Material.OAK_SIGN) {
+            signLoc.getBlock().setType(Material.AIR, false);
+        }
+
+        String rawLine = event.getLine(0);
+        String query = rawLine == null ? "" : rawLine.trim();
+
+        ViewerState state = getState(uuid);
+        state.searchQuery = query;
+        state.page = 0;
+
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (player.isOnline()) {
+                openMainGui(player);
+            }
+        });
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
@@ -513,6 +777,10 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                         openMainGui(player);
                     }
                 }
+                case 46 -> {
+                    state.historyPage = 0;
+                    openHistoryGui(player);
+                }
                 case 47 -> {
                     state.category = state.category.next();
                     state.page = 0;
@@ -533,9 +801,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                         state.page = 0;
                         openMainGui(player);
                     } else {
-                        pendingSearch.put(player.getUniqueId(), state);
-                        player.closeInventory();
-                        sendMsg(player, "search-prompt");
+                        openSignSearch(player);
                     }
                 }
                 case 51 -> openYourItemsGui(player);
@@ -579,6 +845,21 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                 economy.withdrawPlayer(player, listing.price);
                 OfflinePlayer seller = Bukkit.getOfflinePlayer(listing.sellerUuid);
                 economy.depositPlayer(seller, listing.price);
+
+                transactionHistory.add(0, new TransactionRecord(
+                        UUID.randomUUID().toString(),
+                        player.getUniqueId(),
+                        player.getName(),
+                        listing.sellerUuid,
+                        listing.sellerName,
+                        listing.item.clone(),
+                        listing.price,
+                        System.currentTimeMillis()
+                ));
+                if (transactionHistory.size() > 300) {
+                    transactionHistory.subList(300, transactionHistory.size()).clear();
+                }
+
                 saveData();
 
                 giveOrDrop(player, listing.item);
@@ -660,6 +941,19 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                     openYourItemsGui(player);
                 }
             }
+            return;
+        }
+
+        if (holder.type == GuiType.HISTORY) {
+            if (slot == 45 && state.historyPage > 0) {
+                state.historyPage--;
+                openHistoryGui(player);
+            } else if (slot == 49) {
+                openMainGui(player);
+            } else if (slot == 53) {
+                state.historyPage++;
+                openHistoryGui(player);
+            }
         }
     }
 
@@ -673,36 +967,29 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
     @EventHandler
     public void onInventoryClose(InventoryCloseEvent event) {
         if (!(event.getPlayer() instanceof Player player)) return;
-        if (event.getInventory().getHolder() instanceof AmberAHHolder holder && holder.type == GuiType.SHULKER_PREVIEW) {
-            Bukkit.getScheduler().runTask(this, () -> openMainGui(player));
+        if (!(event.getInventory().getHolder() instanceof AmberAHHolder holder)) return;
+
+        UUID uuid = player.getUniqueId();
+        if (transitioningGui.contains(uuid)) return;
+
+        if (holder.type == GuiType.SHULKER_PREVIEW) {
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (player.isOnline()) {
+                    openMainGui(player);
+                }
+            });
+            return;
         }
-    }
 
-    @EventHandler(priority = EventPriority.LOWEST)
-    public void onAsyncChat(AsyncChatEvent event) {
-        Player player = event.getPlayer();
-        ViewerState state = pendingSearch.remove(player.getUniqueId());
-        if (state == null) return;
-
-        event.setCancelled(true);
-        String input = PlainTextComponentSerializer.plainText().serialize(event.message()).trim();
-
-        Bukkit.getScheduler().runTask(this, () -> {
-            if (input.equalsIgnoreCase("huy") || input.equalsIgnoreCase("cancel")) {
-                sendMsg(player, "search-cancelled");
-            } else {
-                state.searchQuery = input;
-                state.page = 0;
-            }
-            openMainGui(player);
-        });
+        resetState(uuid);
     }
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
+        cleanupSignSession(uuid);
+        transitioningGui.remove(uuid);
         viewerStates.remove(uuid);
-        pendingSearch.remove(uuid);
     }
 
     private ItemStack buildListingDisplayItem(AuctionListing listing, UUID viewerUuid, long now) {
@@ -789,6 +1076,14 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
         int count = 0;
         for (AuctionListing l : activeListings.values()) {
             if (l.sellerUuid.equals(uuid)) count++;
+        }
+        return count;
+    }
+
+    private int countHistoryByPlayer(UUID uuid) {
+        int count = 0;
+        for (TransactionRecord rec : transactionHistory) {
+            if (rec.buyerUuid.equals(uuid) || rec.sellerUuid.equals(uuid)) count++;
         }
         return count;
     }
@@ -892,8 +1187,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
         }
 
         if (args.length == 0) {
-            ViewerState state = getState(player.getUniqueId());
-            state.page = 0;
+            resetState(player.getUniqueId());
             openMainGui(player);
             return true;
         }
@@ -976,25 +1270,32 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
         }
 
         if (sub.equals("expired") || sub.equals("my")) {
+            resetState(player.getUniqueId());
             openYourItemsGui(player);
             return true;
         }
 
-        if (sub.equals("search") || sub.equals("tim")) {
-            ViewerState state = getState(player.getUniqueId());
-            if (args.length >= 2) {
-                state.searchQuery = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
-                state.page = 0;
-            } else {
-                state.searchQuery = "";
-            }
-            openMainGui(player);
+        if (sub.equals("history") || sub.equals("lichsu")) {
+            resetState(player.getUniqueId());
+            openHistoryGui(player);
             return true;
         }
 
+        if (sub.equals("search") || sub.equals("tim")) {
+            resetState(player.getUniqueId());
+            ViewerState state = getState(player.getUniqueId());
+            if (args.length >= 2) {
+                state.searchQuery = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
+                openMainGui(player);
+            } else {
+                openSignSearch(player);
+            }
+            return true;
+        }
+
+        resetState(player.getUniqueId());
         ViewerState state = getState(player.getUniqueId());
         state.searchQuery = String.join(" ", args);
-        state.page = 0;
         openMainGui(player);
         return true;
     }
@@ -1003,7 +1304,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         String last = args.length > 0 ? args[args.length - 1].toLowerCase(Locale.ROOT) : "";
         if (args.length == 1) {
-            List<String> opts = new ArrayList<>(List.of("sell", "search", "expired"));
+            List<String> opts = new ArrayList<>(List.of("sell", "search", "expired", "history"));
             if (sender.hasPermission("amberah.admin")) opts.add("reload");
             return filterPrefix(opts, last);
         }
@@ -1026,7 +1327,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
     }
 
     private enum GuiType {
-        MAIN, CONFIRM, YOUR_ITEMS, SHULKER_PREVIEW
+        MAIN, CONFIRM, YOUR_ITEMS, HISTORY, SHULKER_PREVIEW
     }
 
     private enum FilterCategory {
@@ -1096,6 +1397,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
 
     private static final class ViewerState {
         int page = 0;
+        int historyPage = 0;
         FilterCategory category = FilterCategory.ALL;
         SortMode sort = SortMode.NEWEST;
         String searchQuery = "";
@@ -1118,6 +1420,28 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
             this.price = price;
             this.createdAt = createdAt;
             this.expiresAt = expiresAt;
+        }
+    }
+
+    private static final class TransactionRecord {
+        final String id;
+        final UUID buyerUuid;
+        final String buyerName;
+        final UUID sellerUuid;
+        final String sellerName;
+        final ItemStack item;
+        final double price;
+        final long timestamp;
+
+        TransactionRecord(String id, UUID buyerUuid, String buyerName, UUID sellerUuid, String sellerName, ItemStack item, double price, long timestamp) {
+            this.id = id;
+            this.buyerUuid = buyerUuid;
+            this.buyerName = buyerName;
+            this.sellerUuid = sellerUuid;
+            this.sellerName = sellerName;
+            this.item = item;
+            this.price = price;
+            this.timestamp = timestamp;
         }
     }
 
