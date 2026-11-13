@@ -27,6 +27,7 @@ import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.server.ServiceRegisterEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
@@ -70,12 +71,6 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        if (!setupEconomy()) {
-            getLogger().severe("Không tìm thấy Vault hoặc plugin tiền tệ! Đang tắt AmberAH.");
-            Bukkit.getPluginManager().disablePlugin(this);
-            return;
-        }
-
         loadData();
         Bukkit.getPluginManager().registerEvents(this, this);
 
@@ -85,12 +80,28 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
             cmd.setTabCompleter(this);
         }
 
+        if (!setupEconomy()) {
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (!setupEconomy()) {
+                    getLogger().severe("Không tìm thấy Vault hoặc plugin tiền tệ! Đang tắt AmberAH.");
+                    Bukkit.getPluginManager().disablePlugin(this);
+                }
+            });
+        }
+
         Bukkit.getScheduler().runTaskTimer(this, this::checkExpirations, 200L, 600L);
     }
 
     @Override
     public void onDisable() {
         saveData();
+    }
+
+    @EventHandler
+    public void onServiceRegister(ServiceRegisterEvent event) {
+        if (event.getProvider().getService() == Economy.class) {
+            setupEconomy();
+        }
     }
 
     private boolean setupEconomy() {
@@ -156,6 +167,7 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
     }
 
     private void saveData() {
+        if (dataFile == null) return;
         if (dataConfig == null) dataConfig = new YamlConfiguration();
         dataConfig.set("active", null);
         dataConfig.set("expired", null);
@@ -496,6 +508,10 @@ public final class AmberAH extends JavaPlugin implements Listener, CommandExecut
                 return;
             }
             if (slot == 11 && holder.confirmListingId != null) {
+                if (economy == null && !setupEconomy()) {
+                    player.sendMessage(color(getPrefix() + "&cHệ thống tiền tệ chưa sẵn sàng, vui lòng thử lại."));
+                    return;
+                }
                 AuctionListing listing = activeListings.get(holder.confirmListingId);
                 if (listing == null || System.currentTimeMillis() >= listing.expiresAt) {
                     sendMsg(player, "already-sold");
